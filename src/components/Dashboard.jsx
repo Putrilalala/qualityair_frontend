@@ -424,14 +424,16 @@ const Dashboard = () => {
         };
     }, [clickedBar]);
 
-    useEffect(() => {
+     useEffect(() => {
         if (!selectedDay) return;
-        const today = new Date().toISOString().split('T')[0];
+
         const cachedHourly = hourlyPerDay[selectedDay];
-        if (cachedHourly && cachedHourly.length > 0) return;
+
+        // kalau sudah pernah fetch, jangan fetch ulang
+        if (cachedHourly !== undefined) return;
 
         fetchHourlyForDay(selectedDay);
-    }, [selectedDay, hourlyPerDay]);
+    }, [selectedDay]);  
 
     if (loading) return (
         <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-50 to-blue-50">
