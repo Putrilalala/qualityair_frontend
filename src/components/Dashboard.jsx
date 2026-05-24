@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import {
     AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-    PieChart, Pie, Cell, BarChart, Bar, LineChart, Line
+    PieChart, Pie, Cell, BarChart, Bar, LineChart, Line, ComposedChart
 } from 'recharts';
 import { Thermometer, Droplets, Wind, Filter, Cloud } from 'lucide-react';
 import api, { getLatestPrediction } from '../services/api';
@@ -100,6 +100,26 @@ const Dashboard = () => {
         if (aqi <= 200) return "Tidak Sehat";
         if (aqi <= 300) return "Sangat Tidak Sehat";
         return "Berbahaya";
+    };
+
+    // ✅ CUSTOM TOOLTIP - FILTER TREND DATA FROM DISPLAY
+    const CustomTooltip = ({ active, payload, label }) => {
+        if (active && payload && payload.length) {
+            const filteredPayload = payload.filter(entry => !entry.dataKey.startsWith('trend_'));
+            if (filteredPayload.length === 0) return null;
+            
+            return (
+                <div className="bg-white p-2 rounded shadow-lg border border-slate-200">
+                    <p className="text-sm font-medium text-slate-700">{label}</p>
+                    {filteredPayload.map((entry, index) => (
+                        <p key={index} style={{ color: entry.color }} className="text-sm">
+                            {entry.name}: {typeof entry.value === 'number' ? entry.value.toFixed(1) : entry.value}
+                        </p>
+                    ))}
+                </div>
+            );
+        }
+        return null;
     };
 
     // ✅ MOCK DATA UNTUK TESTING
@@ -486,12 +506,63 @@ const Dashboard = () => {
         return 'Berbahaya';
     };
 
+    // Hitung trend line menggunakan linear regression untuk satu nilai
+    const calculateTrendLineForKey = (data, key) => {
+        if (data.length < 2) return [];
+        
+        const n = data.length;
+        const values = data.map(d => d[key]);
+        const indices = Array.from({ length: n }, (_, i) => i);
+        
+        const meanX = indices.reduce((a, b) => a + b, 0) / n;
+        const meanY = values.reduce((a, b) => a + b, 0) / n;
+        
+        const numerator = indices.reduce((sum, x, i) => sum + (x - meanX) * (values[i] - meanY), 0);
+        const denominator = indices.reduce((sum, x) => sum + (x - meanX) ** 2, 0);
+        
+        if (denominator === 0) return {};
+        
+        const slope = numerator / denominator;
+        const intercept = meanY - slope * meanX;
+        
+        const trendLine = {};
+        data.forEach((d, i) => {
+            trendLine[`trend_${key}`] = slope * i + intercept;
+        });
+        return trendLine;
+    };
+
+    // Hitung trend line menggunakan linear regression
+    const calculateTrendLine = (data, keyName = 'value') => {
+        if (data.length < 2) return [];
+        
+        const n = data.length;
+        const values = data.map(d => d[keyName]);
+        const indices = Array.from({ length: n }, (_, i) => i);
+        
+        const meanX = indices.reduce((a, b) => a + b, 0) / n;
+        const meanY = values.reduce((a, b) => a + b, 0) / n;
+        
+        const numerator = indices.reduce((sum, x, i) => sum + (x - meanX) * (values[i] - meanY), 0);
+        const denominator = indices.reduce((sum, x) => sum + (x - meanX) ** 2, 0);
+        
+        if (denominator === 0) return [];
+        
+        const slope = numerator / denominator;
+        const intercept = meanY - slope * meanX;
+        
+        return data.map((d, i) => ({
+            ...d,
+            trend: slope * i + intercept
+        }));
+    };
+
     // Mock weekly data for bar chart - DINAMIS BERDASARKAN KATEGORI
     const getWeeklyData = () => {
         const selectedCat = filterCategories.find(cat => cat.key === selectedCategory);
         if (!selectedCat) return daily.map(d => ({ name: d.day, value: d.aqi }));
 
-        return daily.map(d => ({
+        const data = daily.map(d => ({
             name: d.day,
             value: d[selectedCat.dataKey],
             date: d.date,
@@ -509,6 +580,48 @@ const Dashboard = () => {
             co2: d.mq135_ppm,
             aqi: d.aqi
         }));
+        
+        // Tambahkan trend line
+        if (selectedCategory === 'aqi') {
+            // Untuk AQI, hitung trend untuk ketiga parameter
+            return data.map((d, i) => {
+                const indices = Array.from({ length: data.length }, (_, idx) => idx);
+                
+                // Hitung trend untuk CO
+                const coValues = data.map(x => x.co);
+                const meanX = indices.reduce((a, b) => a + b, 0) / data.length;
+                const meanYCo = coValues.reduce((a, b) => a + b, 0) / data.length;
+                const numCo = indices.reduce((sum, x, idx) => sum + (x - meanX) * (coValues[idx] - meanYCo), 0);
+                const denomCo = indices.reduce((sum, x) => sum + (x - meanX) ** 2, 0);
+                const slopeCo = denomCo !== 0 ? numCo / denomCo : 0;
+                const interceptCo = meanYCo - slopeCo * meanX;
+                
+                // Hitung trend untuk CO2
+                const co2Values = data.map(x => x.co2);
+                const meanYCo2 = co2Values.reduce((a, b) => a + b, 0) / data.length;
+                const numCo2 = indices.reduce((sum, x, idx) => sum + (x - meanX) * (co2Values[idx] - meanYCo2), 0);
+                const denomCo2 = indices.reduce((sum, x) => sum + (x - meanX) ** 2, 0);
+                const slopeCo2 = denomCo2 !== 0 ? numCo2 / denomCo2 : 0;
+                const interceptCo2 = meanYCo2 - slopeCo2 * meanX;
+                
+                // Hitung trend untuk AQI
+                const aqiValues = data.map(x => x.aqi);
+                const meanYAqi = aqiValues.reduce((a, b) => a + b, 0) / data.length;
+                const numAqi = indices.reduce((sum, x, idx) => sum + (x - meanX) * (aqiValues[idx] - meanYAqi), 0);
+                const denomAqi = indices.reduce((sum, x) => sum + (x - meanX) ** 2, 0);
+                const slopeAqi = denomAqi !== 0 ? numAqi / denomAqi : 0;
+                const interceptAqi = meanYAqi - slopeAqi * meanX;
+                
+                return {
+                    ...d,
+                    trend_co: slopeCo * i + interceptCo,
+                    trend_co2: slopeCo2 * i + interceptCo2,
+                    trend_aqi: slopeAqi * i + interceptAqi
+                };
+            });
+        } else {
+            return calculateTrendLine(data);
+        }
     };
 
     // Fungsi untuk mendapatkan data 24 jam berdasarkan hari yang dipilih
@@ -905,51 +1018,89 @@ const Dashboard = () => {
                     </h3>
                     <div className={`w-full h-[200px] overflow-hidden transition-all duration-300 ease-out ${selectedCategory !== 'aqi' ? 'cursor-pointer' : ''}`} style={{ outline: 'none' }}>
                         <ResponsiveContainer width="100%" height="100%" style={{ outline: 'none' }}>
-                            <BarChart 
-                                data={weeklyData} 
-                                barGap={selectedCategory === 'aqi' ? 1 : 0} 
-                                barCategoryGap={selectedCategory === 'aqi' ? 2 : 1}
-                                onMouseEnter={() => selectedCategory !== 'aqi' && !clickedBar && setIsBarInteracting(true)}
-                                onMouseLeave={() => {
-                                    // Hanya clear saat tidak ada bar yang diklik
-                                    if (!clickedBar) {
-                                        setIsBarInteracting(false);
-                                    }
-                                }}
-                            >
-                                <CartesianGrid vertical={false} stroke="#f1f5f9" />
-                                <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontSize: 10 }} />
-                                <Tooltip 
-                                    cursor={false}
-                                    content={null}
-                                />
-                                {selectedCategory === 'aqi' ? (
-                                    <>
-                                        <Bar
-                                            dataKey="co"
-                                            fill="#E74C3C"
-                                            radius={[2, 2, 2, 2]}
-                                            barSize={10}
-                                            onClick={(data) => selectedCategory !== 'aqi' && handleBarClick(data)}
-                                            style={{ cursor: selectedCategory !== 'aqi' ? 'pointer' : 'default' }}
-                                        />
-                                        <Bar
-                                            dataKey="co2"
-                                            fill="#F39C12"
-                                            radius={[2, 2, 2, 2]}
-                                            barSize={10}
-                                            onClick={(data) => selectedCategory !== 'aqi' ? handleBarClick(data) : null}
-                                            style={{ cursor: selectedCategory !== 'aqi' ? 'pointer' : 'default' }}
-                                        />
-                                        <Bar
-                                            dataKey="aqi"
-                                            fill="#2ECC71"
-                                            radius={[2, 2, 2, 2]}
-                                            barSize={10}
-                                        />
-                                    </>
-                                ) : (
+                            {selectedCategory === 'aqi' ? (
+                                <ComposedChart 
+                                    data={weeklyData} 
+                                    barGap={1} 
+                                    barCategoryGap={2}
+                                >
+                                    <CartesianGrid vertical={false} stroke="#f1f5f9" />
+                                    <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontSize: 10 }} />
+                                    <YAxis yAxisId="left" axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontSize: 10 }} />
+                                    <Tooltip content={<CustomTooltip />} />
                                     <Bar
+                                        yAxisId="left"
+                                        dataKey="co"
+                                        fill="#E74C3C"
+                                        radius={[2, 2, 2, 2]}
+                                        barSize={10}
+                                    />
+                                    <Bar
+                                        yAxisId="left"
+                                        dataKey="co2"
+                                        fill="#F39C12"
+                                        radius={[2, 2, 2, 2]}
+                                        barSize={10}
+                                    />
+                                    <Bar
+                                        yAxisId="left"
+                                        dataKey="aqi"
+                                        fill="#2ECC71"
+                                        radius={[2, 2, 2, 2]}
+                                        barSize={10}
+                                    />
+                                    <Line
+                                        yAxisId="left"
+                                        type="monotone"
+                                        dataKey="trend_co"
+                                        stroke="#C0392B"
+                                        strokeWidth={2}
+                                        dot={false}
+                                        isAnimationActive={true}
+                                        animationDuration={1200}
+                                        animationEasing="ease"
+                                    />
+                                    <Line
+                                        yAxisId="left"
+                                        type="monotone"
+                                        dataKey="trend_co2"
+                                        stroke="#D68910"
+                                        strokeWidth={2}
+                                        dot={false}
+                                        isAnimationActive={true}
+                                        animationDuration={1200}
+                                        animationEasing="ease"
+                                    />
+                                    <Line
+                                        yAxisId="left"
+                                        type="monotone"
+                                        dataKey="trend_aqi"
+                                        stroke="#27AE60"
+                                        strokeWidth={2}
+                                        dot={false}
+                                        isAnimationActive={true}
+                                        animationDuration={1200}
+                                        animationEasing="ease"
+                                    />
+                                </ComposedChart>
+                            ) : (
+                                <ComposedChart 
+                                    data={weeklyData} 
+                                    barGap={0} 
+                                    barCategoryGap={1}
+                                    onMouseEnter={() => !clickedBar && setIsBarInteracting(true)}
+                                    onMouseLeave={() => {
+                                        if (!clickedBar) {
+                                            setIsBarInteracting(false);
+                                        }
+                                    }}
+                                >
+                                    <CartesianGrid vertical={false} stroke="#f1f5f9" />
+                                    <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontSize: 10 }} />
+                                    <YAxis yAxisId="left" axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontSize: 10 }} />
+                                    <Tooltip content={<CustomTooltip />} />
+                                    <Bar
+                                        yAxisId="left"
                                         dataKey="value"
                                         fill={filterCategories.find(cat => cat.key === selectedCategory)?.color || '#60a5fa'}
                                         radius={[2, 2, 0, 0]}
@@ -969,8 +1120,19 @@ const Dashboard = () => {
                                             />
                                         ))}
                                     </Bar>
-                                )}
-                            </BarChart>
+                                    <Line
+                                        yAxisId="left"
+                                        type="monotone"
+                                        dataKey="trend"
+                                        stroke="#6366f1"
+                                        strokeWidth={2}
+                                        dot={false}
+                                        isAnimationActive={true}
+                                        animationDuration={1200}
+                                        animationEasing="ease"
+                                    />
+                                </ComposedChart>
+                            )}
                         </ResponsiveContainer>
                     </div>
                     {selectedCategory !== 'aqi' && (
